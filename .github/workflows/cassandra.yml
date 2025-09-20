@@ -1,0 +1,117 @@
+name: Cassandra tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: openjdk:21-bookworm
+
+    services:
+      cassandra:
+        image: cassandra:5.0
+        ports:
+          - 9042:9042
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cassandra startup
+        run: |
+          # Wait for server
+          for i in {1..60}; do
+            (echo > /dev/tcp/cassandra/9042) > /dev/null 2>&1 && echo "Cassandra is ready!" && break
+            echo "Waiting for Cassandra server..."
+            sleep 5
+          done
+          
+          # Wait for cqlsh
+          for i in {1..300}; do
+            if cqlsh cassandra 9042 -e "SHOW VERSION" > /dev/null 2>&1; then
+              echo "Cassandra CQL is ready!"
+              break
+            fi
+            echo "Waiting for Cassandra CQL..."
+            sleep 5
+          done
+          exit
+          
+          CID="${{ job.services.cassandra.id }}"
+          
+          echo "Waiting for Cassandra to start..."
+          for i in {1..60}; do
+            if docker exec "$CID" nodetool status > /dev/null 2>&1; then
+              echo "Cassandra is up!"
+              break
+            fi
+            sleep 5
+          done
+
+          echo "CQL probe"
+          for i in {1..40}; do
+            if docker exec "$CID" cqlsh -e "SHOW VERSION" > /dev/null 2>&1; then
+              echo "CQL service is ready!"
+              break
+            fi
+            echo "Still waiting for CQL"
+            sleep 5
+          done
+
+      - name: Creation of keyspace and table
+        run: |
+          exit
+          docker exec ${{ job.services.cassandra.id }} cqlsh -e "
+          CREATE KEYSPACE IF NOT EXISTS directory
+          WITH REPLICATION = {'class': 'SimpleStrategy', 'replication_factor': 1};
+          USE directory;
+          CREATE TABLE IF NOT EXISTS user_profile (
+              id uuid PRIMARY KEY,
+              name text,
+              age int,
+              tags set<text>,
+              created_at timestamp
+          );"
+
+      - name: Build
+        run: |
+          ./gradlew build --no-daemon --stacktrace -x test
+
+      - name: Test
+        run: |
+          ./gradlew test --no-daemon --stacktrace --tests="cassandra.*"
+        env:
+          CASSANDRA_HOST: cassandra
+          CASSANDRA_PORT: 9042
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: build/reports/tests/html
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+
+    steps:
+      - name: Download test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: test-reports
+          path: ./reports
+
+      - name: Publish reports
+        uses: peaceiris/actions-gh-pages@v4.0.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./reports
+          publish_branch: gh-pages
+          commit_message: "Publish test reports"
+          keep_files: false

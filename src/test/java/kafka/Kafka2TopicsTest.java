@@ -1,0 +1,99 @@
+package kafka;
+
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+
+import java.time.Duration;
+import java.util.Collections;
+import java.util.Properties;
+
+@TestMethodOrder(MethodOrderer.MethodName.class)
+public class Kafka2TopicsTest {
+
+    private static final String TOPIC1 = System.getenv().getOrDefault("TOPIC1", "topic1");
+    private static final String TOPIC2 = System.getenv().getOrDefault("TOPIC2", "topic2");
+    private static final String[] TOPICS = {TOPIC1, TOPIC2};
+    private static final String BOOTSTRAP_SERVERS =
+            System.getenv().getOrDefault("BOOTSTRAP_SERVERS", "localhost:9092");
+
+    private static String[] splitString(String input) {
+        if (input == null || input.isEmpty())
+            return new String[0];
+        // Split by comma or any whitespace (space, tab, etc.)
+        return input.trim().split("\\s*,\\s*|\\s+");
+    }
+    
+    @BeforeAll
+    public static void setup() throws InterruptedException {
+        KafkaUtils.waitForServer();
+    }
+
+    @Test
+    public void A_producer() {
+        Properties props = new Properties();
+        props.put("bootstrap.servers", BOOTSTRAP_SERVERS);
+        props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+        props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+
+        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
+            for(String topic: TOPICS) {
+                System.out.println("Producing messages in topic " + topic);
+                for (int i = 1; i <= 5; i++) {
+                    String key = "key-" + i;
+                    String value = "Message " + i + " for topic " + topic;
+                    ProducerRecord<String, String> record = new ProducerRecord<>(topic, key, value);
+                    producer.send(record);
+                    System.out.printf("Produced: key=%s, value=%s%n", key, value);
+                }
+                producer.flush(); // ensure all messages are sent
+            }
+        }
+    }
+
+    @Test
+    public void B_consumer() {
+        Properties props = new Properties();
+        props.put("bootstrap.servers", BOOTSTRAP_SERVERS);
+        props.put("group.id", "my-consumer-group-" + System.currentTimeMillis());
+        props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        props.put("auto.offset.reset", "earliest");
+        props.put("enable.auto.commit", "false");
+        
+        for(String topic: TOPICS) {
+            try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
+                System.out.println("Consuming messages in topic " + topic);
+                consumer.subscribe(Collections.singletonList(topic));
+                ConsumerRecords<String, String> records = ConsumerRecords.empty();
+
+                // Poll loop to ensure messages are received
+                int retries = 10;
+                while (records.isEmpty() && retries-- > 0) {
+                    records = consumer.poll(Duration.ofSeconds(2));
+                }
+
+                for (ConsumerRecord<String, String> record : records) {
+                    System.out.printf("Consumed: offset=%d, key=%s, value=%s%n",
+                        record.offset(), record.key(), record.value());
+                }
+
+                if (!records.isEmpty()) {
+                    consumer.commitSync();
+                    System.out.println("Offsets committed manually.");
+                } else {
+                    System.out.println("No messages consumed in topic " + topic);
+                }
+            }
+        }
+    }
+}
