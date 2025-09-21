@@ -116,3 +116,4 @@ jobs:
           destination_dir: docs
           commit_message: "Publish test reports"
           keep_files: false
+          force_orphan: true
